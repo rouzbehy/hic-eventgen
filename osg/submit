@@ -1,0 +1,117 @@
+#!/bin/bash
+
+if (( $# < 3 )); then
+  echo "usage: $0 batch_label jobs_per_input_file input_files..."
+  exit 1
+fi
+
+# parse arguments
+batchlabel=$1
+jobsperinput=$2
+inputfiles=${@:3}
+
+# every batch needs a unique ID -- a timestamp works well
+timestamp="$(date --utc +%Y%m%d_%H%M%S)"
+
+# set OSG project name
+project='Duke-QGP'
+[[ $(hostname) == *osgconnect.net ]] && project="osg.$project"
+
+# create a "scratch" directory for all the condor files
+scratchdir="/stash/user/$USER/${timestamp}_${batchlabel//\//_}"
+mkdir -p $scratchdir
+
+# create local folder to store returned files
+for input_file in $inputfiles; do
+  mkdir -p $scratchdir/Results/$(basename $input_file)
+  for i in `seq -w 0 $(($jobsperinput-1))`; do
+    mkdir -p $scratchdir/Results/$(basename $input_file)/event-$i
+  done
+done
+
+# copy input files to scratch
+mkdir $scratchdir/inputfiles
+cp -v $inputfiles $scratchdir/inputfiles
+
+# create directories for job stdout and stderr files
+for f in $inputfiles; do
+  mkdir -p $scratchdir/stdouterr/$(basename $f)
+done
+
+# go to directory containing this script
+# https://stackoverflow.com/a/246128
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+# make package, place in scratch directory
+pkgfile='hic-osg.tar.gz'
+./makepkg $scratchdir
+
+# copy condor executable to scratch
+exefile='hic-wrapper'
+cp -v $exefile $scratchdir
+
+cd $scratchdir
+
+# Define job requirements:
+#  - Require RHEL 6 (until RHEL 7 nodes have requisite modules).
+#  - All nodes must have oasis modules.
+#  - Avoid last several hosts; this prevents repeated failures on the same
+#    machines ("black holes").  See e.g.
+#    https://htcondor-wiki.cs.wisc.edu/index.cgi/wiki?p=AvoidingBlackHoles
+histlen=5
+requirements='OSGVO_OS_STRING == "RHEL 6" && HAS_CVMFS_oasis_opensciencegrid_org'
+for i in $(seq $(( histlen - 1 ))); do
+  requirements="$requirements && target.machine =!= MachineAttrMachine$i"
+done
+
+# Create the condor submit description file.  Some notes:
+#   - This job cluster runs each input file once.  Below, the dag runs the
+#     requested number of copies.
+#   - The "Machine" attribute is saved for avoiding black holes (see above).
+#   - Several trivial hold reasons are automatically released.
+#     See the table for "HoldReasonCode" at
+#     https://research.cs.wisc.edu/htcondor/manual/current/12_Appendix_A.html
+#   - Failed jobs are not removed but put back in the queue to be retried.
+cat > job <<EOF
+universe = vanilla
++ProjectName = "$project"
+
+job_machine_attrs = Machine
+job_machine_attrs_history_length = $histlen
+requirements = $requirements
+
+request_memory = 1G
+request_disk = 1G
+rank = KFlops
+
+executable = $exefile
+input_file = \$BASENAME(input_file_path)
+arguments = \$(input_file)
+
+transfer_input_files = $pkgfile, \$(input_file_path)
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_output_remaps = "results=Results/\$(input_file)/event-\$(dag_node_name)/results; JetData.h5=Results/\$(input_file)/event-\$(dag_node_name)/JetData.h5; initial.hdf=Results/\$(input_file)/event-\$(dag_node_name)/initial.hdf5; surface.dat=Results/\$(input_file)/event-\$(dag_node_name)/surface.dat; EventPlanesFrzout.dat=Results/\$(input_file)/event-\$(dag_node_name)/EventPlanesFrzout.dat;"
+#final_hadrons.hdf=Results/\$(input_file)/event-\$(dag_node_name)/final_hadrons.hdf
+
+output = stdouterr/\$(input_file)/\$(dag_node_name).out
+error = stdouterr/\$(input_file)/\$(dag_node_name).err
+
+periodic_release = (HoldReasonCode == 12) || (HoldReasonCode == 13)
+on_exit_remove = (ExitBySignal == False) && (ExitCode == 0)
+
+queue input_file_path matching files inputfiles/*
+EOF
+
+# Create a dag file to run the requested number of jobs for each input file.
+# This is possible without a dag but would overload the queue because all jobs
+# would be submitted at once.  Throttling with the -maxidle option prevents
+# overloading.
+echo -n 'writing dag file...'
+for n in $(seq -w 0 $(( jobsperinput - 1 ))); do
+  echo "JOB $n job" >> $scratchdir/dag
+done
+echo 'done'
+
+# go!
+condor_submit_dag -maxidle 1000 dag

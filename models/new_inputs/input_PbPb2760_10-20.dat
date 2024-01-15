@@ -1,0 +1,14 @@
+nevents= 1
+avg-ic = on
+afterburner = on
+system-and-sqrts = PbPb2760
+norm = 13.9
+centrality-def= entropy
+centrality-low= 10
+centrality-high= 20
+nucleon-width= 0.96
+tau-fs= 1.2
+trento-args= Pb Pb -x 6.4 -p 0. -k 1.2 --ncoll
+grid-step=.1
+hydro-args= stop=0.140 min=0.08 slope=1.1 curvature=-0.5 zetas_max=0.05 zetas_width=0.02 zetas_t0=0.180 iskip_t=4 iskip_xy=2
+Tswitch= 0.151
