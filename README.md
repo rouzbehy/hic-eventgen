@@ -1,5 +1,7 @@
 # hic-eventgen
 
+<span style="color:red"> *a slightly modified version of the famous hic-eventgen used to generate smooth hydro events for my jet studies. I will come back to this repo to clean it up a bit more kater. No time now!! * </span>.
+
 _heavy-ion collision event generator_
 
 ## Three-sentence summary
